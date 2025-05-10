@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Spot & Score</title>
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#111111" />
+  <link rel="icon" href="icon-192.png">
+  <style>
+    body {
+      margin: 0;
+      font-family: sans-serif;
+      text-align: center;
+      background: #111;
+      color: white;
+    }
+    h1 { margin-top: 1em; }
+    video, canvas {
+      width: 100%;
+      max-width: 480px;
+      border-radius: 8px;
+    }
+    #score {
+      font-size: 2em;
+      margin: 1em 0;
+    }
+    .color-box {
+      width: 40px;
+      height: 40px;
+      display: inline-block;
+      border: 2px solid white;
+      margin-left: 10px;
+    }
+  </style>
+</head>
+<body>
+  <h1>🚗 Spot & Score</h1>
+  <div id="score">Score: <span id="scoreVal">0</span></div>
+  <video id="video" autoplay muted playsinline></video>
+  <canvas id="canvas" style="display: none;"></canvas>
+
+  <script type="module">
+    import * as tf from 'https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.14.0/dist/tf.min.js';
+
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const scoreVal = document.getElementById('scoreVal');
+
+    let model;
+    let score = 0;
+
+    async function setupCamera() {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false });
+      video.srcObject = stream;
+      return new Promise(resolve => video.onloadedmetadata = () => resolve(video));
+    }
+
+    async function loadModel() {
+      model = await tf.loadGraphModel('https://tfhub.dev/tensorflow/ssd_mobilenet_v2/2', { fromTFHub: true });
+      console.log('Model loaded');
+    }
+
+    function getDominantColor(imageData) {
+      const data = imageData.data;
+      const rgb = [0, 0, 0];
+      const pixelCount = data.length / 4;
+
+      for (let i = 0; i < data.length; i += 4) {
+        rgb[0] += data[i];     // R
+        rgb[1] += data[i + 1]; // G
+        rgb[2] += data[i + 2]; // B
+      }
+
+      rgb[0] = Math.round(rgb[0] / pixelCount);
+      rgb[1] = Math.round(rgb[1] / pixelCount);
+      rgb[2] = Math.round(rgb[2] / pixelCount);
+
+      return `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]})`;
+    }
+
+    async function detect() {
+      if (!model) return;
+
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+      const input = tf.browser.fromPixels(canvas).expandDims(0);
+      const res = await model.executeAsync(input);
+      const [boxes, scores, classes, nums] = res;
+
+      const boxesData = boxes.dataSync();
+      const scoresData = scores.dataSync();
+      const classesData = classes.dataSync();
+
+      for (let i = 0; i < scoresData.length; ++i) {
+        if (scoresData[i] > 0.5 && classesData[i] === 3) { // Class 3 = car
+          const [ymin, xmin, ymax, xmax] = boxesData.slice(i * 4, i * 4 + 4);
+          const x = xmin * canvas.width;
+          const y = ymin * canvas.height;
+          const width = (xmax - xmin) * canvas.width;
+          const height = (ymax - ymin) * canvas.height;
+
+          const carImageData = ctx.getImageData(x, y, width, height);
+          const color = getDominantColor(carImageData);
+          score++;
+
+          scoreVal.textContent = score;
+          const box = document.createElement('span');
+          box.className = 'color-box';
+          box.style.background = color;
+          document.getElementById('score').appendChild(box);
+        }
+      }
+
+      tf.dispose([input, ...res]);
+      requestAnimationFrame(detect);
+    }
+
+    (async () => {
+      await setupCamera();
+      await loadModel();
+      detect();
+    })();
+  </script>
+
+  <!-- PWA: Register Service Worker -->
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('sw.js')
+        .then(reg => console.log('Service Worker registered', reg))
+        .catch(err => console.error('Service Worker registration failed:', err));
+    }
+  </script>
+</body>
+</html>
